@@ -1,7 +1,5 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
-import os
-os.environ['HF_HOME'] = '/tmp/hf_cache'  # Set cache directory to a writable location
 
 import pandas as pd
 import streamlit as st
@@ -19,28 +17,34 @@ from queue import Queue
 # Set page configuration as the first Streamlit command
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
 
-# Cache model initialization
+# Cache model initialization with retry logic
 @st.cache_resource
-def load_model():
-    try:
-        from sentence_transformers import SentenceTransformer
-        return SentenceTransformer('all-MiniLM-L6-v2')
-    except Exception as e:
-        st.error(f"Failed to load SentenceTransformer model: {e}. Running without embeddings.")
-        return None
+def load_model(max_retries=3, delay=5):
+    from sentence_transformers import SentenceTransformer
+    for attempt in range(max_retries):
+        try:
+            model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')  # Confirmed model path
+            st.success("Successfully loaded SentenceTransformer model.")
+            return model
+        except (ImportError, OSError, ValueError) as e:
+            if attempt < max_retries - 1:
+                st.warning(f"Attempt {attempt + 1} failed to load model due to: {e}. Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                st.warning(f"Failed to load SentenceTransformer model after {max_retries} attempts due to: {e}. Running without embeddings.")
+                return None
 
-# Initialize model and embeddings
+# Initialize embedding model and dependencies
+embedding_model = load_model()
 try:
     from sentence_transformers import SentenceTransformer
     import faiss
-    EMBEDDINGS_AVAILABLE = True
-    embedding_model = load_model()
+    EMBEDDINGS_AVAILABLE = embedding_model is not None
 except ImportError as e:
-    st.error(f"Warning: Failed to import sentence_transformers or faiss due to: {e}. Running without embeddings.")
+    st.warning(f"Failed to import sentence_transformers or faiss due to: {e}. Running without embeddings.")
     EMBEDDINGS_AVAILABLE = False
     SentenceTransformer = None
     faiss = None
-    embedding_model = None
 
 # Configure Gemini API
 API_KEY = "AIzaSyCbRBKNHM-OEW7HuJ5Kogobeoop6GCzhcY"
@@ -67,16 +71,12 @@ def setup_vector_database(_df):
     if not EMBEDDINGS_AVAILABLE or embedding_model is None:
         return None, [], []
     descriptions = [f"{row['Assessment Name']} {row.get('URL', '')} {' '.join(row['Assessment Name'].lower().split())}" for _, row in _df.iterrows()]
-    try:
-        embeddings = embedding_model.encode(descriptions, convert_to_numpy=True, show_progress_bar=False)
-        dimension = embeddings.shape[1]
-        index = faiss.IndexFlatL2(dimension) if faiss else None
-        if index:
-            index.add(embeddings)
-        return index, descriptions, embeddings
-    except Exception as e:
-        st.error(f"Error setting up vector database: {e}")
-        return None, [], []
+    embeddings = embedding_model.encode(descriptions, convert_to_numpy=True, show_progress_bar=False)
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension) if faiss else None
+    if index:
+        index.add(embeddings)
+    return index, descriptions, embeddings
 
 index, descriptions, embeddings = setup_vector_database(df)
 
@@ -84,7 +84,7 @@ index, descriptions, embeddings = setup_vector_database(df)
 def extract_text_from_url_threaded(url, result_queue):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=15)  # Increased timeout
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
 
@@ -111,13 +111,13 @@ def extract_text_from_url(url):
     result_queue = Queue()
     thread = threading.Thread(target=extract_text_from_url_threaded, args=(url, result_queue))
     thread.start()
-    thread.join(timeout=20)  # Increased join timeout
+    thread.join(timeout=15)
     return result_queue.get() if not thread.is_alive() else "Timeout or error fetching URL"
 
 # Cache similar assessments with threading
-def retrieve_similar_assessments_threaded(query, k, result_queue, max_retries=5):  # Increased retries
+def retrieve_similar_assessments_threaded(query, k, result_queue, max_retries=3):
     if not EMBEDDINGS_AVAILABLE or index is None or embedding_model is None:
-        result_queue.put([(row, 0) for _, row in df.head(k).iterrows()])
+        result_queue.put([(row, 0) for _, row in df.iterrows()])  # Use all rows instead of head(k)
         return
     for attempt in range(max_retries):
         try:
@@ -127,9 +127,9 @@ def retrieve_similar_assessments_threaded(query, k, result_queue, max_retries=5)
             return
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(2)  # Increased sleep time
+                time.sleep(1)
                 continue
-            result_queue.put([(row, 0) for _, row in df.head(k).iterrows()])
+            result_queue.put([(row, 0) for _, row in df.iterrows()])
             st.error(f"Failed to retrieve similar assessments after {max_retries} attempts: {e}")
 
 @st.cache_data
@@ -137,8 +137,8 @@ def retrieve_similar_assessments(query, k=10):
     result_queue = Queue()
     thread = threading.Thread(target=retrieve_similar_assessments_threaded, args=(query, k, result_queue))
     thread.start()
-    thread.join(timeout=15)  # Increased join timeout
-    return result_queue.get() if not thread.is_alive() else [(row, 0) for _, row in df.head(k).iterrows()]
+    thread.join(timeout=10)
+    return result_queue.get() if not thread.is_alive() else [(row, 0) for _, row in df.iterrows()]
 
 # Enhanced Gemini parsing with threading
 def parse_query_with_gemini_threaded(query, result_queue, max_retries=3):
@@ -220,29 +220,33 @@ def recommend_assessments(query, max_results=10):
     similar_assessments = retrieve_similar_assessments(query, k=max_results * 2)
     recommendations = []
 
-    for (row, similarity_distance), _ in zip(similar_assessments, range(max_results * 2)):
+    for (row, similarity_distance) in similar_assessments:
         score = 0
         assessment_name = row["Assessment Name"].lower()
         duration = row["Duration"]
         test_types = [t.lower().strip() for t in row["Test Type"].split(", ")]
 
+        # Skill matching
         skill_matches = sum(1 for skill in required_skills if skill in assessment_name or any(skill in t.lower() for t in test_types))
         if skill_matches == len(required_skills):
             score += 100
         elif skill_matches > 0:
             score += skill_matches * 40
 
+        # Duration matching
         if max_duration and duration != "N/A" and float(duration) <= float(max_duration) * 1.2:
             score += 30
         elif not max_duration and duration != "N/A" and float(duration) <= 60:
             score += 15
 
+        # Test type matching
         if required_test_types and any(test_type in ", ".join(test_types) for test_type in required_test_types):
             score += 50
         elif not required_test_types and any(t in ["Knowledge & Skills", "Ability & Aptitude"] for t in test_types):
             score += 20
 
-        similarity_score = 100 - (similarity_distance / np.max(similarity_distance) * 50) if EMBEDDINGS_AVAILABLE and similarity_distance > 0 and np is not None else 0
+        # Similarity score (zero without embeddings)
+        similarity_score = 0 if not EMBEDDINGS_AVAILABLE else (100 - (similarity_distance / np.max(similarity_distance) * 50) if similarity_distance > 0 and np is not None else 0)
         score += similarity_score * 0.3
 
         if score > 0:
@@ -347,9 +351,14 @@ def run_streamlit():
                     html_table = html_table.replace('</tr>', '</tr><tr style="background-color: #2a2a2a;" onmouseover="this.style.backgroundColor=\'#2a2a2a\';" onmouseout="this.style.backgroundColor=\'#1a1a1a\';">')
 
                     st.write(html_table, unsafe_allow_html=True)
-
+                    st.write(f"Debug: Number of recommendations: {len(results)}, Top score: {results[0][0] if results else 0}")
                 else:
                     st.error("No matching assessments found. Please check the input or dataset.")
+
+                st.subheader("Evaluation Metrics")
+                mean_recall, map_k = evaluate_recommendations()
+                st.write(f"Mean Recall@5: {mean_recall:.3f}")
+                st.write(f"Mean Average Precision @5 (MAP@5): {map_k:.3f}")
 
             st.subheader("Debug Info")
             st.json(parse_query_with_gemini(user_input))
