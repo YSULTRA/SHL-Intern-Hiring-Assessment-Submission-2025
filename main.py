@@ -380,7 +380,35 @@ def run_streamlit():
         else:
             st.warning("Please enter a job description or URL.")
 
-    st.sidebar.markdown("**Developed by xAI** :star2:")
+    st.sidebar.markdown("""
+### 👨‍💻 Yash Singh
+**B.Tech CSE, IIIT-Delhi (2022–26)**
+📍 New Delhi, India
+📧 [singh.yash152004@gmail.com](mailto:singh.yash152004@gmail.com)
+📱 +91 9266137288
+
+---
+
+**💼 Skills:**
+- Java, Python, C, C++, Kotlin
+- Django, Google Cloud, JavaFX, MongoDB, LangChain
+- DSA, Web Dev, Android, Full Stack
+
+**🧠 Domains:**
+Machine Learning, UI/UX, OS, DBMS, CN
+
+---
+
+[🔗 LinkedIn](https://www.linkedin.com/in/yash-singh-a1990025b/)
+[💻 GitHub](https://github.com/YSULTRA)
+[🏅 LeetCode](https://leetcode.com/u/yash22589/)
+[📄 Resume Projects](https://drive.google.com/file/d/1F-E0GxE79l8IvtjYcY93HyAgBn_7RnAT/view)
+
+---
+
+**Developed by xAI** :star2:
+""")
+
 
 if __name__ == '__main__':
     run_streamlit()
