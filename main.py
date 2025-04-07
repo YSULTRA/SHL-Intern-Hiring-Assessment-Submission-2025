@@ -1,7 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
-import os
-os.environ['HF_HOME'] = '/tmp/hf_cache'
+# Removed os.environ['HF_HOME'] = '/tmp/hf_cache' to use default cache directory
 
 import pandas as pd
 import streamlit as st
