@@ -1,5 +1,7 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
+import os
+os.environ['HF_HOME'] = '/tmp/hf_cache'  # Set cache directory to a writable location
 
 import pandas as pd
 import streamlit as st
@@ -17,34 +19,28 @@ from queue import Queue
 # Set page configuration as the first Streamlit command
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
 
-# Cache model initialization with retry logic
+# Cache model initialization
 @st.cache_resource
-def load_model(max_retries=3, delay=5):
-    from sentence_transformers import SentenceTransformer
-    for attempt in range(max_retries):
-        try:
-            model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')  # Confirmed model path
-            st.success("Successfully loaded SentenceTransformer model.")
-            return model
-        except (ImportError, OSError, ValueError) as e:
-            if attempt < max_retries - 1:
-                st.warning(f"Attempt {attempt + 1} failed to load model due to: {e}. Retrying in {delay} seconds...")
-                time.sleep(delay)
-            else:
-                st.warning(f"Failed to load SentenceTransformer model after {max_retries} attempts due to: {e}. Running without embeddings.")
-                return None
+def load_model():
+    try:
+        from sentence_transformers import SentenceTransformer
+        return SentenceTransformer('all-MiniLM-L6-v2')
+    except Exception as e:
+        st.error(f"Failed to load SentenceTransformer model: {e}. Running without embeddings.")
+        return None
 
-# Initialize embedding model and dependencies
-embedding_model = load_model()
+# Initialize model and embeddings
 try:
     from sentence_transformers import SentenceTransformer
     import faiss
-    EMBEDDINGS_AVAILABLE = embedding_model is not None
+    EMBEDDINGS_AVAILABLE = True
+    embedding_model = load_model()
 except ImportError as e:
-    st.warning(f"Failed to import sentence_transformers or faiss due to: {e}. Running without embeddings.")
+    st.error(f"Warning: Failed to import sentence_transformers or faiss due to: {e}. Running without embeddings.")
     EMBEDDINGS_AVAILABLE = False
     SentenceTransformer = None
     faiss = None
+    embedding_model = None
 
 # Configure Gemini API
 API_KEY = "AIzaSyCbRBKNHM-OEW7HuJ5Kogobeoop6GCzhcY"
@@ -71,12 +67,16 @@ def setup_vector_database(_df):
     if not EMBEDDINGS_AVAILABLE or embedding_model is None:
         return None, [], []
     descriptions = [f"{row['Assessment Name']} {row.get('URL', '')} {' '.join(row['Assessment Name'].lower().split())}" for _, row in _df.iterrows()]
-    embeddings = embedding_model.encode(descriptions, convert_to_numpy=True, show_progress_bar=False)
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension) if faiss else None
-    if index:
-        index.add(embeddings)
-    return index, descriptions, embeddings
+    try:
+        embeddings = embedding_model.encode(descriptions, convert_to_numpy=True, show_progress_bar=False)
+        dimension = embeddings.shape[1]
+        index = faiss.IndexFlatL2(dimension) if faiss else None
+        if index:
+            index.add(embeddings)
+        return index, descriptions, embeddings
+    except Exception as e:
+        st.error(f"Error setting up vector database: {e}")
+        return None, [], []
 
 index, descriptions, embeddings = setup_vector_database(df)
 
@@ -84,7 +84,7 @@ index, descriptions, embeddings = setup_vector_database(df)
 def extract_text_from_url_threaded(url, result_queue):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)  # Increased timeout
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
 
@@ -111,11 +111,11 @@ def extract_text_from_url(url):
     result_queue = Queue()
     thread = threading.Thread(target=extract_text_from_url_threaded, args=(url, result_queue))
     thread.start()
-    thread.join(timeout=15)
+    thread.join(timeout=20)  # Increased join timeout
     return result_queue.get() if not thread.is_alive() else "Timeout or error fetching URL"
 
 # Cache similar assessments with threading
-def retrieve_similar_assessments_threaded(query, k, result_queue, max_retries=3):
+def retrieve_similar_assessments_threaded(query, k, result_queue, max_retries=5):  # Increased retries
     if not EMBEDDINGS_AVAILABLE or index is None or embedding_model is None:
         result_queue.put([(row, 0) for _, row in df.head(k).iterrows()])
         return
@@ -127,7 +127,7 @@ def retrieve_similar_assessments_threaded(query, k, result_queue, max_retries=3)
             return
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2)  # Increased sleep time
                 continue
             result_queue.put([(row, 0) for _, row in df.head(k).iterrows()])
             st.error(f"Failed to retrieve similar assessments after {max_retries} attempts: {e}")
@@ -137,7 +137,7 @@ def retrieve_similar_assessments(query, k=10):
     result_queue = Queue()
     thread = threading.Thread(target=retrieve_similar_assessments_threaded, args=(query, k, result_queue))
     thread.start()
-    thread.join(timeout=10)
+    thread.join(timeout=15)  # Increased join timeout
     return result_queue.get() if not thread.is_alive() else [(row, 0) for _, row in df.head(k).iterrows()]
 
 # Enhanced Gemini parsing with threading
@@ -350,11 +350,6 @@ def run_streamlit():
 
                 else:
                     st.error("No matching assessments found. Please check the input or dataset.")
-
-                st.subheader("Evaluation Metrics")
-                mean_recall, map_k = evaluate_recommendations()
-                st.write(f"Mean Recall@5: {mean_recall:.3f}")
-                st.write(f"Mean Average Precision @5 (MAP@5): {map_k:.3f}")
 
             st.subheader("Debug Info")
             st.json(parse_query_with_gemini(user_input))
