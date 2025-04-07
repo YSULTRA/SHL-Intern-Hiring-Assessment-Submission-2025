@@ -1,10 +1,15 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
 import os
+import sys
 
-# Set offline mode and local model path
-os.environ['HF_HUB_OFFLINE'] = '1'  # Force offline mode
-MODEL_DIR = "models/all-MiniLM-L6-v2"  # Path to pre-downloaded model
+# Set offline mode
+os.environ['HF_HUB_OFFLINE'] = '1'
+
+# Determine the absolute path to the model directory
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "models", "all-MiniLM-L6-v2")
+if not os.path.exists(MODEL_DIR):
+    MODEL_DIR = os.path.join(os.getcwd(), "models", "all-MiniLM-L6-v2")  # Fallback to current working directory
 
 import pandas as pd
 import streamlit as st
@@ -22,14 +27,19 @@ from queue import Queue
 # Set page configuration as the first Streamlit command
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
 
-# Cache model initialization with offline mode
+# Cache model initialization with offline mode and path validation
 @st.cache_resource
 def load_model(max_retries=3, delay=5):
     from sentence_transformers import SentenceTransformer
     for attempt in range(max_retries):
         try:
-            model = SentenceTransformer(MODEL_DIR, local_files_only=True)  # Load from local directory
-            st.success("Successfully loaded SentenceTransformer model from local cache.")
+            # Check if the model directory contains config.json
+            config_path = os.path.join(MODEL_DIR, "config.json")
+            if not os.path.exists(config_path):
+                raise ValueError(f"Missing config.json in {MODEL_DIR}. Ensure the model files are correctly placed.")
+
+            model = SentenceTransformer(MODEL_DIR, local_files_only=True)
+            st.success(f"Successfully loaded SentenceTransformer model from {MODEL_DIR}.")
             return model
         except (ImportError, OSError, ValueError) as e:
             if attempt < max_retries - 1:
