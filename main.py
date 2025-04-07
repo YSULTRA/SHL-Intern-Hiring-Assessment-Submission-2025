@@ -1,6 +1,5 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
-# Removed os.environ['HF_HOME'] = '/tmp/hf_cache' to use default cache directory
 
 import pandas as pd
 import streamlit as st
@@ -18,22 +17,28 @@ from queue import Queue
 # Set page configuration as the first Streamlit command
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
 
-# Cache model initialization
+# Cache model initialization with robust error handling
 @st.cache_resource
 def load_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
+    try:
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')  # Full model path
+        return model
+    except (ImportError, OSError, ValueError) as e:
+        st.warning(f"Failed to load SentenceTransformer model due to: {e}. Running without embeddings.")
+        return None
 
+# Initialize embedding model and dependencies
+embedding_model = load_model()
 try:
     from sentence_transformers import SentenceTransformer
     import faiss
-    EMBEDDINGS_AVAILABLE = True
-    embedding_model = load_model()
+    EMBEDDINGS_AVAILABLE = embedding_model is not None
 except ImportError as e:
-    st.error(f"Warning: Failed to import sentence_transformers or faiss due to: {e}. Running without embeddings.")
+    st.warning(f"Failed to import sentence_transformers or faiss due to: {e}. Running without embeddings.")
     EMBEDDINGS_AVAILABLE = False
     SentenceTransformer = None
     faiss = None
-    embedding_model = None
 
 # Configure Gemini API
 API_KEY = "AIzaSyCbRBKNHM-OEW7HuJ5Kogobeoop6GCzhcY"
@@ -339,6 +344,11 @@ def run_streamlit():
 
                 else:
                     st.error("No matching assessments found. Please check the input or dataset.")
+
+                st.subheader("Evaluation Metrics")
+                mean_recall, map_k = evaluate_recommendations()
+                st.write(f"Mean Recall@5: {mean_recall:.3f}")
+                st.write(f"Mean Average Precision @5 (MAP@5): {map_k:.3f}")
 
             st.subheader("Debug Info")
             st.json(parse_query_with_gemini(user_input))
