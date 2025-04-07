@@ -13,6 +13,9 @@ import numpy as np
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
+from fastapi import FastAPI, HTTPException
+import uvicorn
+import asyncio
 
 # Configure environment and API
 os.environ['HF_HUB_OFFLINE'] = '1'
@@ -24,28 +27,39 @@ MODEL_DIR = os.path.join(os.path.dirname(__file__), "models", "all-MiniLM-L6-v2"
 if not os.path.exists(MODEL_DIR):
     MODEL_DIR = os.path.join(os.getcwd(), "models", "all-MiniLM-L6-v2")
 
+# Initialize FastAPI app
+app = FastAPI()
+
 # Initialize Streamlit application
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
 
 @st.cache_resource
 def load_model(max_retries=3, delay=5):
     """Load the SentenceTransformer model with retry logic."""
-    from sentence_transformers import SentenceTransformer
-    for attempt in range(max_retries):
-        try:
-            config_path = os.path.join(MODEL_DIR, "config.json")
-            if not os.path.exists(config_path):
-                raise ValueError(f"Missing config.json in {MODEL_DIR}")
-            model = SentenceTransformer(MODEL_DIR, local_files_only=True)
-            st.success(f"Successfully loaded SentenceTransformer model from {MODEL_DIR}")
-            return model
-        except (ImportError, OSError, ValueError) as e:
-            if attempt < max_retries - 1:
-                st.warning(f"Attempt {attempt + 1} failed to load model due to: {e}. Retrying in {delay} seconds...")
-                time.sleep(delay)
-            else:
-                st.warning(f"Failed to load SentenceTransformer model after {max_retries} attempts due to: {e}. Running without embeddings.")
-                return None
+    try:
+        from sentence_transformers import SentenceTransformer
+        for attempt in range(max_retries):
+            try:
+                config_path = os.path.join(MODEL_DIR, "config.json")
+                if not os.path.exists(config_path):
+                    raise ValueError(f"Missing config.json in {MODEL_DIR}")
+                # Check for compatibility with local_files_only
+                model_kwargs = {}
+                if hasattr(SentenceTransformer, '__init__') and 'local_files_only' in SentenceTransformer.__init__.__code__.co_varnames:
+                    model_kwargs['local_files_only'] = True
+                model = SentenceTransformer(MODEL_DIR, **model_kwargs)
+                st.success(f"Successfully loaded SentenceTransformer model from {MODEL_DIR}")
+                return model
+            except (ImportError, OSError, ValueError) as e:
+                if attempt < max_retries - 1:
+                    st.warning(f"Attempt {attempt + 1} failed to load model due to: {e}. Retrying in {delay} seconds...")
+                    time.sleep(delay)
+                else:
+                    st.warning(f"Failed to load SentenceTransformer model after {max_retries} attempts due to: {e}. Running without embeddings.")
+                    return None
+    except ImportError as e:
+        st.error(f"Failed to import SentenceTransformer due to: {e}. Running without embeddings.")
+        return None
 
 embedding_model = load_model()
 try:
@@ -248,6 +262,56 @@ def recommend_assessments(query, max_results=10):
     recommendations.sort(key=lambda x: x[0], reverse=True)
     return recommendations[:max_results] if recommendations else []
 
+# API Endpoint
+@app.get("/recommend")
+async def get_recommendations(query: str, max_results: int = 10):
+    """GET API endpoint to retrieve assessment recommendations in JSON format."""
+    if not query:
+        raise HTTPException(status_code=400, detail="Query parameter is required")
+
+    # Process the query (similar to Streamlit logic)
+    requirements = parse_query_with_gemini(query)
+    required_skills = [s.lower().strip() for s in requirements.get("required_skills", [])]
+    max_duration = requirements.get("max_duration")
+    required_test_types = [t.lower().strip() for t in requirements.get("test_types", [])]
+    similar_assessments = retrieve_similar_assessments(query, k=max_results * 2)
+    recommendations = []
+
+    for row, similarity_distance in similar_assessments:
+        score = 0
+        assessment_name = row["Assessment Name"].lower()
+        duration = row["Duration"]
+        test_types = [t.lower().strip() for t in row["Test Type"].split(", ")]
+        skill_matches = sum(1 for skill in required_skills if skill in assessment_name or any(skill in t.lower() for t in test_types))
+        if skill_matches == len(required_skills):
+            score += 100
+        elif skill_matches > 0:
+            score += skill_matches * 60
+        if max_duration and duration != "N/A" and float(duration) <= float(max_duration) * 1.2:
+            score += 30
+        elif not max_duration and duration != "N/A" and float(duration) <= 60:
+            score += 15
+        if required_test_types and any(test_type in ", ".join(test_types) for test_type in required_test_types):
+            score += 50
+        elif not required_test_types and any(t in ["Knowledge & Skills", "Ability & Aptitude"] for t in test_types):
+            score += 20
+        similarity_score = 0 if not EMBEDDINGS_AVAILABLE else (100 - (similarity_distance / np.max(similarity_distance) * 50) if similarity_distance > 0 and np is not None else 0)
+        score += similarity_score * 0.3
+        if score > 0:
+            recommendations.append({
+                "rank": len(recommendations) + 1,
+                "assessment_name": row["Assessment Name"],
+                "url": row["URL"],
+                "duration": float(row["Duration"]) if row["Duration"] != "N/A" else "N/A",
+                "remote_testing_support": row["Remote Testing Support"],
+                "adaptive_irt_support": row["Adaptive/IRT Support"],
+                "test_type": row["Test Type"],
+                "score": score
+            })
+
+    recommendations.sort(key=lambda x: x["score"], reverse=True)
+    return {"recommendations": recommendations[:max_results] if recommendations else []}
+
 def evaluate_recommendations():
     """Evaluate recommendation performance with recall and MAP metrics."""
     test_queries = [
@@ -339,10 +403,10 @@ def run_streamlit():
                     st.write(f"Debug: Number of recommendations: {len(results)}, Top score: {results[0][0] if results else 0}")
                 else:
                     st.error("No matching assessments found. Please check the input or dataset.")
-                # st.subheader("Evaluation Metrics")
-                # mean_recall, map_k = evaluate_recommendations()
-                # st.write(f"Mean Recall@5: {mean_recall:.3f}")
-                # st.write(f"Mean Average Precision @5 (MAP@5): {map_k:.3f}")
+                st.subheader("Evaluation Metrics")
+                mean_recall, map_k = evaluate_recommendations()
+                st.write(f"Mean Recall@5: {mean_recall:.3f}")
+                st.write(f"Mean Average Precision @5 (MAP@5): {map_k:.3f}")
             st.subheader("Debug Info")
             st.json(parse_query_with_gemini(user_input))
         else:
@@ -360,5 +424,18 @@ def run_streamlit():
 **Developed by Yash Singh** :star2:
 """)
 
-if __name__ == "__main__":
+
+async def main():
+
+    def run_api():
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    import threading
+    api_thread = threading.Thread(target=run_api, daemon=True)
+    api_thread.start()
+
+    # Run Streamlit
     run_streamlit()
+
+if __name__ == "__main__":
+    asyncio.run(main())
