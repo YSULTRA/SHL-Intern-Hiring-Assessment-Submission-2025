@@ -1,5 +1,10 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
+import os
+
+# Set offline mode and local model path
+os.environ['HF_HUB_OFFLINE'] = '1'  # Force offline mode
+MODEL_DIR = "models/all-MiniLM-L6-v2"  # Path to pre-downloaded model
 
 import pandas as pd
 import streamlit as st
@@ -17,14 +22,14 @@ from queue import Queue
 # Set page configuration as the first Streamlit command
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
 
-# Cache model initialization with retry logic
+# Cache model initialization with offline mode
 @st.cache_resource
 def load_model(max_retries=3, delay=5):
     from sentence_transformers import SentenceTransformer
     for attempt in range(max_retries):
         try:
-            model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')  # Confirmed model path
-            st.success("Successfully loaded SentenceTransformer model.")
+            model = SentenceTransformer(MODEL_DIR, local_files_only=True)  # Load from local directory
+            st.success("Successfully loaded SentenceTransformer model from local cache.")
             return model
         except (ImportError, OSError, ValueError) as e:
             if attempt < max_retries - 1:
@@ -117,7 +122,7 @@ def extract_text_from_url(url):
 # Cache similar assessments with threading
 def retrieve_similar_assessments_threaded(query, k, result_queue, max_retries=3):
     if not EMBEDDINGS_AVAILABLE or index is None or embedding_model is None:
-        result_queue.put([(row, 0) for _, row in df.iterrows()])  # Use all rows instead of head(k)
+        result_queue.put([(row, 0) for _, row in df.iterrows()])  # Use all rows
         return
     for attempt in range(max_retries):
         try:
@@ -231,7 +236,7 @@ def recommend_assessments(query, max_results=10):
         if skill_matches == len(required_skills):
             score += 100
         elif skill_matches > 0:
-            score += skill_matches * 40
+            score += skill_matches * 60  # Increased weight for better matching
 
         # Duration matching
         if max_duration and duration != "N/A" and float(duration) <= float(max_duration) * 1.2:
