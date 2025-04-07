@@ -17,16 +17,22 @@ from queue import Queue
 # Set page configuration as the first Streamlit command
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
 
-# Cache model initialization with robust error handling
+# Cache model initialization with retry logic
 @st.cache_resource
-def load_model():
-    try:
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')  # Full model path
-        return model
-    except (ImportError, OSError, ValueError) as e:
-        st.warning(f"Failed to load SentenceTransformer model due to: {e}. Running without embeddings.")
-        return None
+def load_model(max_retries=3, delay=5):
+    from sentence_transformers import SentenceTransformer
+    for attempt in range(max_retries):
+        try:
+            model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')  # Confirmed model path
+            st.success("Successfully loaded SentenceTransformer model.")
+            return model
+        except (ImportError, OSError, ValueError) as e:
+            if attempt < max_retries - 1:
+                st.warning(f"Attempt {attempt + 1} failed to load model due to: {e}. Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                st.warning(f"Failed to load SentenceTransformer model after {max_retries} attempts due to: {e}. Running without embeddings.")
+                return None
 
 # Initialize embedding model and dependencies
 embedding_model = load_model()
