@@ -387,13 +387,6 @@ def run_streamlit():
 📧 [singh.yash152004@gmail.com](mailto:singh.yash152004@gmail.com)
 📱 +91 9266137288
 
----
-
-**💼 Skills:**
-- Java, Python, C, C++, Kotlin
-- Django, Google Cloud, JavaFX, MongoDB, LangChain
-- DSA, Web Dev, Android, Full Stack
-
 **🧠 Domains:**
 Machine Learning, UI/UX, OS, DBMS, CN
 
@@ -406,7 +399,7 @@ Machine Learning, UI/UX, OS, DBMS, CN
 
 ---
 
-**Developed by xAI** :star2:
+**Developed by Yash Singh** :star2:
 """)
 
 
