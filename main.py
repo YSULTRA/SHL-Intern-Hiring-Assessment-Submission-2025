@@ -28,69 +28,80 @@ app = FastAPI()
 
 # Initialize Streamlit application
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
-
 @st.cache_resource
-def load_model(max_retries=3, delay=5):
-    """Load the SentenceTransformer model with robust offline/fallback support."""
+def load_model():
+    """Robust model loading with automatic download and fallback options."""
+    import os
+    import shutil
+    from sentence_transformers import SentenceTransformer
+    import requests
+    import zipfile
+    import io
+
+    model_name = "all-MiniLM-L6-v2"
+    model_dir = os.path.join("models", model_name)
+    os.makedirs(model_dir, exist_ok=True)
+
+    # Solution 1: Try loading from local directory first
     try:
-        from sentence_transformers import SentenceTransformer
-
-        # Define model name and possible locations
-        model_name = "all-MiniLM-L6-v2"
-        possible_dirs = [
-            os.path.join(os.path.dirname(__file__), "models", model_name),
-            os.path.join(os.getcwd(), "models", model_name),
-            os.path.join(os.path.expanduser("~"), ".cache", "torch", "sentence_transformers", model_name),
-            os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub", "models--sentence-transformers--all-MiniLM-L6-v2")
-        ]
-
-        # Try online download first (if allowed)
-        try:
-            if os.getenv('HF_HUB_OFFLINE', '1') != '1':  # Only try download if not in offline mode
-                model = SentenceTransformer(model_name)
-                st.success(f"Successfully downloaded model: {model_name}")
-                return model
-        except Exception as download_error:
-            st.warning(f"Online download failed (may be offline): {download_error}")
-
-        # Try all possible local cache locations
-        for model_dir in possible_dirs:
-            try:
-                if os.path.exists(model_dir):
-                    # Verify at least config.json exists
-                    config_path = os.path.join(model_dir, "config.json")
-                    if not os.path.exists(config_path):
-                        st.warning(f"Found directory but missing config.json at: {model_dir}")
-                        continue
-
-                    model = SentenceTransformer(model_dir)
-                    st.success(f"Successfully loaded model from: {model_dir}")
-                    return model
-            except Exception as e:
-                st.warning(f"Failed to load from {model_dir}: {e}")
-                continue
-
-        # Ultimate fallback - try loading directly (may work if model is in system cache)
-        try:
-            model = SentenceTransformer(model_name, device='cpu')
-            st.success(f"Loaded model from system cache")
+        if os.path.exists(os.path.join(model_dir, "config.json")):
+            model = SentenceTransformer(model_dir)
+            st.success(f"Loaded model from local directory: {model_dir}")
             return model
-        except Exception as e:
-            st.warning(f"Final attempt failed: {e}")
+    except Exception as e:
+        st.warning(f"Local load attempt failed: {e}")
 
-        st.warning("""
-        Failed to load SentenceTransformer model. Running without embeddings.
-        Possible solutions:
-        1. Check your internet connection and restart
-        2. Download the model manually and place in 'models/all-MiniLM-L6-v2'
-        3. Set HF_HUB_OFFLINE=0 to attempt download
-        """)
-        return None
+    # Solution 2: Try downloading from Hugging Face
+    try:
+        if os.getenv('HF_HUB_OFFLINE', '0') == '0':  # Only try if online allowed
+            st.info("Attempting to download model from Hugging Face Hub...")
+            model = SentenceTransformer(f'sentence-transformers/{model_name}')
+            model.save(model_dir)
+            st.success("Model downloaded and saved successfully!")
+            return model
+    except Exception as e:
+        st.warning(f"Download failed: {e}")
 
-    except ImportError as e:
-        st.error(f"Failed to import SentenceTransformer: {e}. Running without embeddings.")
-        return None
+    # Solution 3: Try downloading from direct URL as fallback
+    try:
+        st.info("Attempting alternative download method...")
+        model_url = "https://public.ukp.informatik.tu-darmstadt.de/reimers/sentence-transformers/v0.2/all-MiniLM-L6-v2.zip"
 
+        # Download and extract
+        response = requests.get(model_url, stream=True)
+        response.raise_for_status()
+
+        with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+            z.extractall(model_dir)
+
+        # Verify extraction
+        if os.path.exists(os.path.join(model_dir, "config.json")):
+            model = SentenceTransformer(model_dir)
+            st.success("Model downloaded via alternative method!")
+            return model
+    except Exception as e:
+        st.warning(f"Alternative download failed: {e}")
+
+    # Solution 4: Try system cache as last resort
+    try:
+        model = SentenceTransformer(model_name)
+        st.success("Loaded model from system cache")
+        return model
+    except Exception as e:
+        st.warning(f"System cache load failed: {e}")
+
+    # Final fallback
+    st.error("""
+    Could not load SentenceTransformer model. The application will run with limited functionality.
+
+    To fix this:
+    1. Ensure internet connection is available
+    2. Or manually download the model:
+       - From Hugging Face: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+       - Or run: `python -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2').save('models/all-MiniLM-L6-v2')\"`
+    3. Place the model files in: models/all-MiniLM-L6-v2/
+    """)
+    return None
 
 embedding_model = load_model()
 
