@@ -31,43 +31,66 @@ st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initi
 
 @st.cache_resource
 def load_model(max_retries=3, delay=5):
-    """Load the SentenceTransformer model with retry logic."""
+    """Load the SentenceTransformer model with robust offline/fallback support."""
     try:
         from sentence_transformers import SentenceTransformer
 
-        # First try to download the model if not available locally
+        # Define model name and possible locations
         model_name = "all-MiniLM-L6-v2"
+        possible_dirs = [
+            os.path.join(os.path.dirname(__file__), "models", model_name),
+            os.path.join(os.getcwd(), "models", model_name),
+            os.path.join(os.path.expanduser("~"), ".cache", "torch", "sentence_transformers", model_name),
+            os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub", "models--sentence-transformers--all-MiniLM-L6-v2")
+        ]
+
+        # Try online download first (if allowed)
         try:
-            model = SentenceTransformer(model_name)
-            st.success(f"Successfully loaded SentenceTransformer model: {model_name}")
-            return model
+            if os.getenv('HF_HUB_OFFLINE', '1') != '1':  # Only try download if not in offline mode
+                model = SentenceTransformer(model_name)
+                st.success(f"Successfully downloaded model: {model_name}")
+                return model
         except Exception as download_error:
-            st.warning(f"Failed to download model: {download_error}. Trying local cache...")
+            st.warning(f"Online download failed (may be offline): {download_error}")
 
-            # Define possible model directories
-            possible_dirs = [
-                os.path.join(os.path.dirname(__file__), "models", model_name),
-                os.path.join(os.getcwd(), "models", model_name),
-                os.path.join(os.path.expanduser("~"), ".cache", "torch", "sentence_transformers", model_name)
-            ]
+        # Try all possible local cache locations
+        for model_dir in possible_dirs:
+            try:
+                if os.path.exists(model_dir):
+                    # Verify at least config.json exists
+                    config_path = os.path.join(model_dir, "config.json")
+                    if not os.path.exists(config_path):
+                        st.warning(f"Found directory but missing config.json at: {model_dir}")
+                        continue
 
-            # Try each possible directory
-            for model_dir in possible_dirs:
-                try:
-                    if os.path.exists(model_dir):
-                        model = SentenceTransformer(model_dir)
-                        st.success(f"Successfully loaded model from: {model_dir}")
-                        return model
-                except Exception as e:
-                    st.warning(f"Failed to load from {model_dir}: {e}")
-                    continue
+                    model = SentenceTransformer(model_dir)
+                    st.success(f"Successfully loaded model from: {model_dir}")
+                    return model
+            except Exception as e:
+                st.warning(f"Failed to load from {model_dir}: {e}")
+                continue
 
-            st.warning(f"Failed to load SentenceTransformer model after checking all locations. Running without embeddings.")
-            return None
+        # Ultimate fallback - try loading directly (may work if model is in system cache)
+        try:
+            model = SentenceTransformer(model_name, device='cpu')
+            st.success(f"Loaded model from system cache")
+            return model
+        except Exception as e:
+            st.warning(f"Final attempt failed: {e}")
+
+        st.warning("""
+        Failed to load SentenceTransformer model. Running without embeddings.
+        Possible solutions:
+        1. Check your internet connection and restart
+        2. Download the model manually and place in 'models/all-MiniLM-L6-v2'
+        3. Set HF_HUB_OFFLINE=0 to attempt download
+        """)
+        return None
 
     except ImportError as e:
-        st.error(f"Failed to import SentenceTransformer due to: {e}. Running without embeddings.")
+        st.error(f"Failed to import SentenceTransformer: {e}. Running without embeddings.")
         return None
+
 
 embedding_model = load_model()
 
