@@ -31,49 +31,46 @@ app = FastAPI()
 # Initialize Streamlit application
 st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initial_sidebar_state="expanded")
 
-@st.cache_resource
-def load_model(max_retries=3, delay=5):
-    """Load the SentenceTransformer model with retry logic and download if missing."""
+@st.cache_resource(show_spinner=True)
+def load_model():
+    """Robust model loading with download prevention and proper caching."""
     try:
         from sentence_transformers import SentenceTransformer
+        import os
 
-        # Check if model files exist locally
-        config_path = os.path.join(MODEL_DIR, "config.json")
-        required_files = ["pytorch_model.bin", "model.safetensors", "tf_model.h5", "model.ckpt.index", "flax_model.msgpack"]
-        files_exist = os.path.exists(config_path) and any(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files)
+        model_name = "all-MiniLM-L6-v2"
+        model_dir = os.path.join("models", model_name)
+        os.makedirs(model_dir, exist_ok=True)
 
-        # If offline mode is forced and files don’t exist, warn and return None
-        if os.environ.get('HF_HUB_OFFLINE') == '1' and not files_exist:
-            st.warning("HF_HUB_OFFLINE is set, but no model files found in {}. Running without embeddings.".format(MODEL_DIR))
+        # Check if model files already exist
+        required_files = ["config.json", "pytorch_model.bin", "sentence_bert_config.json"]
+        files_exist = all(os.path.exists(os.path.join(model_dir, f)) for f in required_files)
+
+        if files_exist:
+            try:
+                model = SentenceTransformer(model_dir)
+                st.success("Loaded model from local cache")
+                return model
+            except Exception as e:
+                st.warning(f"Local model load failed: {e}. Attempting download...")
+
+        # Download if needed (only if not in offline mode)
+        if os.getenv('HF_HUB_OFFLINE', '0') == '0':
+            with st.spinner("Downloading model (first time only)..."):
+                try:
+                    model = SentenceTransformer(f'sentence-transformers/{model_name}')
+                    model.save(model_dir)
+                    st.success("Model downloaded and cached")
+                    return model
+                except Exception as e:
+                    st.error(f"Download failed: {e}")
+                    return None
+        else:
+            st.warning("Running in offline mode without embeddings")
             return None
 
-        # If files don’t exist, download the model
-        if not files_exist:
-            st.write("Model files not found in {}. Downloading 'all-MiniLM-L6-v2'...".format(MODEL_DIR))
-            os.environ['HF_HUB_OFFLINE'] = '0'  # Temporarily enable online mode for download
-            model = SentenceTransformer('all-MiniLM-L6-v2')  # Downloads from Hugging Face
-            os.makedirs(MODEL_DIR, exist_ok=True)
-            model.save(MODEL_DIR)  # Save locally
-            st.write("Model downloaded and saved to", MODEL_DIR)
-            os.environ['HF_HUB_OFFLINE'] = '1'  # Restore offline mode if desired
-            return model
-
-        # Load model from local directory with retries
-        for attempt in range(max_retries):
-            try:
-                model_kwargs = {'local_files_only': True} if 'local_files_only' in SentenceTransformer.__init__.__code__.co_varnames else {}
-                model = SentenceTransformer(MODEL_DIR, **model_kwargs)
-                st.success(f"Successfully loaded SentenceTransformer model from {MODEL_DIR}")
-                return model
-            except (OSError, ValueError) as e:
-                if attempt < max_retries - 1:
-                    st.warning(f"Attempt {attempt + 1} failed to load model due to: {e}. Retrying in {delay} seconds...")
-                    time.sleep(delay)
-                else:
-                    st.warning(f"Failed to load model after {max_retries} attempts due to: {e}. Running without embeddings.")
-                    return None
     except ImportError as e:
-        st.error(f"Failed to import SentenceTransformer due to: {e}. Running without embeddings.")
+        st.error(f"Package missing: {e}")
         return None
 
 embedding_model = load_model()
