@@ -16,9 +16,7 @@ from queue import Queue
 from fastapi import FastAPI, HTTPException
 import uvicorn
 import asyncio
-
 # Configure environment and API
-os.environ['HF_HUB_OFFLINE'] = '1'
 API_KEY = "AIzaSyCbRBKNHM-OEW7HuJ5Kogobeoop6GCzhcY"
 genai.configure(api_key=API_KEY)
 
@@ -35,31 +33,63 @@ st.set_page_config(page_title="SHL Assessment Recommender", layout="wide", initi
 
 @st.cache_resource
 def load_model(max_retries=3, delay=5):
-    """Load the SentenceTransformer model with retry logic."""
+    """Load the SentenceTransformer model with retry logic and download if missing."""
     try:
         from sentence_transformers import SentenceTransformer
+
+        # Check if model files exist locally
+        config_path = os.path.join(MODEL_DIR, "config.json")
+        required_files = ["pytorch_model.bin", "model.safetensors", "tf_model.h5", "model.ckpt.index", "flax_model.msgpack"]
+        files_exist = os.path.exists(config_path) and any(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files)
+
+        # If offline mode is forced and files don’t exist, warn and return None
+        if os.environ.get('HF_HUB_OFFLINE') == '1' and not files_exist:
+            st.warning("HF_HUB_OFFLINE is set, but no model files found in {}. Running without embeddings.".format(MODEL_DIR))
+            return None
+
+        # If files don’t exist, download the model
+        if not files_exist:
+            st.write("Model files not found in {}. Downloading 'all-MiniLM-L6-v2'...".format(MODEL_DIR))
+            os.environ['HF_HUB_OFFLINE'] = '0'  # Temporarily enable online mode for download
+            model = SentenceTransformer('all-MiniLM-L6-v2')  # Downloads from Hugging Face
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            model.save(MODEL_DIR)  # Save locally
+            st.write("Model downloaded and saved to", MODEL_DIR)
+            os.environ['HF_HUB_OFFLINE'] = '1'  # Restore offline mode if desired
+            return model
+
+        # Load model from local directory with retries
         for attempt in range(max_retries):
             try:
-                config_path = os.path.join(MODEL_DIR, "config.json")
-                if not os.path.exists(config_path):
-                    raise ValueError(f"Missing config.json in {MODEL_DIR}")
-                # Check for compatibility with local_files_only
-                model_kwargs = {}
-                if hasattr(SentenceTransformer, '__init__') and 'local_files_only' in SentenceTransformer.__init__.__code__.co_varnames:
-                    model_kwargs['local_files_only'] = True
+                model_kwargs = {'local_files_only': True} if 'local_files_only' in SentenceTransformer.__init__.__code__.co_varnames else {}
                 model = SentenceTransformer(MODEL_DIR, **model_kwargs)
                 st.success(f"Successfully loaded SentenceTransformer model from {MODEL_DIR}")
                 return model
-            except (ImportError, OSError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 if attempt < max_retries - 1:
                     st.warning(f"Attempt {attempt + 1} failed to load model due to: {e}. Retrying in {delay} seconds...")
                     time.sleep(delay)
                 else:
-                    st.warning(f"Failed to load SentenceTransformer model after {max_retries} attempts due to: {e}. Running without embeddings.")
+                    st.warning(f"Failed to load model after {max_retries} attempts due to: {e}. Running without embeddings.")
                     return None
     except ImportError as e:
         st.error(f"Failed to import SentenceTransformer due to: {e}. Running without embeddings.")
         return None
+
+embedding_model = load_model()
+try:
+    from sentence_transformers import SentenceTransformer
+    import faiss
+    EMBEDDINGS_AVAILABLE = embedding_model is not None
+except ImportError as e:
+    st.warning(f"Failed to import sentence_transformers or faiss due to: {e}. Running without embeddings.")
+    EMBEDDINGS_AVAILABLE = False
+    SentenceTransformer = None
+    faiss = None
+
+
+
+
 
 embedding_model = load_model()
 try:
