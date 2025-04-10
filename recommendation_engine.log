@@ -1,0 +1,37 @@
+2025-04-10 18:50:21,857 - sentence_transformers.SentenceTransformer - INFO - Load pretrained SentenceTransformer: all-MiniLM-L6-v2
+2025-04-10 18:50:24,905 - sentence_transformers.SentenceTransformer - INFO - Use pytorch device_name: cpu
+2025-04-10 18:50:24,910 - sentence_transformers.SentenceTransformer - INFO - Save model to models\all-MiniLM-L6-v2
+2025-04-10 18:50:25,141 - __main__ - INFO - Model updated and cached
+2025-04-10 18:54:15,667 - sentence_transformers.SentenceTransformer - INFO - Load pretrained SentenceTransformer: models\all-MiniLM-L6-v2
+2025-04-10 18:54:17,359 - sentence_transformers.SentenceTransformer - INFO - Use pytorch device_name: cpu
+2025-04-10 18:54:17,403 - __main__ - INFO - Loaded dataset with 377 assessments
+2025-04-10 18:54:53,072 - __main__ - INFO - Search indexes initialized
+2025-04-10 18:55:23,884 - __main__ - INFO - Parsed query: {'required_skills': ['Python', 'SQL', 'JavaScript'], 'max_duration': 60, 'test_types': ['Knowledge & Skills', 'Ability & Aptitude', 'Competencies'], 'job_levels': ['mid-level', 'professional'], 'languages': ['English']}
+2025-04-10 18:58:42,660 - sentence_transformers.SentenceTransformer - INFO - Load pretrained SentenceTransformer: models\all-MiniLM-L6-v2
+2025-04-10 18:58:43,916 - sentence_transformers.SentenceTransformer - INFO - Use pytorch device_name: cpu
+2025-04-10 18:58:44,000 - __main__ - INFO - Loaded dataset with 377 assessments
+2025-04-10 18:59:27,459 - __main__ - INFO - Search indexes initialized
+2025-04-10 19:00:42,070 - __main__ - INFO - Parsed query: {'required_skills': ['Python', 'SQL', 'JavaScript'], 'max_duration': 60, 'test_types': ['Knowledge & Skills', 'Ability & Aptitude', 'Competencies'], 'job_levels': ['mid-level', 'professional'], 'languages': ['English']}
+2025-04-10 19:00:46,262 - __main__ - INFO - Parsed query: {'required_skills': ['Python', 'SQL', 'JavaScript'], 'max_duration': 60, 'test_types': ['Knowledge & Skills', 'Ability & Aptitude', 'Competencies'], 'job_levels': ['mid-level', 'professional'], 'languages': ['English']}
+2025-04-10 19:00:53,292 - __main__ - ERROR - Reranking failed: Expecting value: line 1 column 1 (char 0)
+2025-04-10 19:00:53,293 - __main__ - INFO - Generated 10 recommendations for query: Looking to hire mid-level professionals who are proficient in Python, SQL and Java Script. Need an
+assessment package that can test all skills with max duration of 60 minutes.
+2025-04-10 19:01:21,734 - __main__ - INFO - Parsed query: {'required_skills': ['Python', 'SQL', 'JavaScript'], 'max_duration': 60, 'test_types': ['Knowledge & Skills', 'Ability & Aptitude', 'Competencies'], 'job_levels': ['mid-level', 'professional'], 'languages': ['English']}
+2025-04-10 19:01:28,847 - __main__ - ERROR - Reranking failed: Expecting value: line 1 column 1 (char 0)
+2025-04-10 19:01:28,848 - __main__ - INFO - Generated 10 recommendations for query: Looking to hire mid-level professionals who are proficient in Python, SQL and Java Script. Need an
+assessment package that can test all skills with max duration of 60 minutes.
+2025-04-10 19:02:12,536 - __main__ - INFO - Parsed query: {'required_skills': ['Python', 'SQL', 'JavaScript'], 'max_duration': 60, 'test_types': ['Knowledge & Skills', 'Ability & Aptitude', 'Competencies'], 'job_levels': ['mid-level', 'professional'], 'languages': ['English']}
+2025-04-10 19:02:21,813 - __main__ - ERROR - Reranking failed: Expecting value: line 1 column 1 (char 0)
+2025-04-10 19:02:21,814 - __main__ - INFO - Generated 10 recommendations for query: Looking to hire mid-level professionals who are proficient in Python, SQL and Java Script. Need an
+assessment package that can test all skills with max duration of 60 minutes.
+2025-04-10 19:02:52,365 - __main__ - INFO - Parsed query: {'required_skills': ['Java', 'Communication'], 'max_duration': 40, 'test_types': ['Knowledge & Skills', 'Ability & Aptitude', 'Personality & Behavior'], 'job_levels': [], 'languages': ['English', 'Spanish']}
+2025-04-10 19:02:56,916 - __main__ - INFO - Parsed query: {'required_skills': ['Java'], 'max_duration': 40, 'test_types': ['Knowledge & Skills', 'Ability & Aptitude', 'Personality & Behavior'], 'job_levels': [], 'languages': ['English', 'Spanish']}
+2025-04-10 19:03:05,685 - __main__ - ERROR - Reranking failed: Expecting value: line 1 column 1 (char 0)
+2025-04-10 19:03:05,685 - __main__ - INFO - Generated 10 recommendations for query: I am hiring for Java developers who can also collaborate effectively with my business teams. Looking
+for an assessment(s) that can be completed in 40 minutes.
+2025-04-10 19:04:17,503 - __main__ - INFO - Parsed query: {'required_skills': ['Java'], 'max_duration': 40, 'test_types': ['Knowledge & Skills', 'Ability & Aptitude', 'Personality & Behavior'], 'job_levels': [], 'languages': ['English', 'Spanish']}
+2025-04-10 19:04:26,743 - __main__ - ERROR - Reranking failed: Expecting value: line 1 column 1 (char 0)
+2025-04-10 19:04:26,743 - __main__ - INFO - Generated 10 recommendations for query: I am hiring for Java developers who can also collaborate effectively with my business teams. Looking
+for an assessment(s) that can be completed in 40 minutes.
+2025-04-10 19:04:58,249 - sentence_transformers.SentenceTransformer - INFO - Load pretrained SentenceTransformer: models\all-MiniLM-L6-v2
+2025-04-10 19:04:59,022 - sentence_transformers.SentenceTransformer - INFO - Use pytorch device_name: cpu

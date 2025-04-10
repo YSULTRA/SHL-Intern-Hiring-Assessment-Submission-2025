@@ -16,6 +16,8 @@ from queue import Queue
 from fastapi import FastAPI, HTTPException
 import uvicorn
 import asyncio
+import re
+
 # Configure environment and API
 API_KEY = "AIzaSyCbRBKNHM-OEW7HuJ5Kogobeoop6GCzhcY"
 genai.configure(api_key=API_KEY)
@@ -42,7 +44,6 @@ def load_model():
         model_dir = os.path.join("models", model_name)
         os.makedirs(model_dir, exist_ok=True)
 
-        # Check if model files already exist
         required_files = ["config.json", "pytorch_model.bin", "sentence_bert_config.json"]
         files_exist = all(os.path.exists(os.path.join(model_dir, f)) for f in required_files)
 
@@ -54,7 +55,6 @@ def load_model():
             except Exception as e:
                 st.warning(f"Local model load failed: {e}. Attempting download...")
 
-        # Download if needed (only if not in offline mode)
         if os.getenv('HF_HUB_OFFLINE', '0') == '0':
             with st.spinner("Downloading model (first time only)..."):
                 try:
@@ -84,42 +84,38 @@ except ImportError as e:
     SentenceTransformer = None
     faiss = None
 
-
-
-
-
-embedding_model = load_model()
-try:
-    from sentence_transformers import SentenceTransformer
-    import faiss
-    EMBEDDINGS_AVAILABLE = embedding_model is not None
-except ImportError as e:
-    st.warning(f"Failed to import sentence_transformers or faiss due to: {e}. Running without embeddings.")
-    EMBEDDINGS_AVAILABLE = False
-    SentenceTransformer = None
-    faiss = None
-
 @st.cache_data
 def load_dataset():
-    """Load and filter the assessment dataset."""
+    """Load and filter the assessment dataset from output.csv."""
     try:
-        df = pd.read_csv("shl_assessments_updated.csv")
-        return df[df['Test Type'].str.contains("Knowledge & Skills|Ability & Aptitude|Assessment Exercises", case=False, na=False)]
+        df = pd.read_csv("output.csv")
+        df['Duration'] = df['Duration'].fillna("N/A")
+        df['Job Description'] = df['Job Description'].fillna("")
+        df['Job Levels'] = df['Job Levels'].fillna("")
+        df['Languages'] = df['Languages'].fillna("English (USA)")
+        df['Scraped Description'] = df['Scraped Description'].fillna("")
+        return df
     except FileNotFoundError:
-        st.error("Error: 'shl_assessments_updated.csv' not found. Using empty dataset.")
-        return pd.DataFrame(columns=["Assessment Name", "URL", "Remote Testing Support", "Adaptive/IRT Support", "Duration", "Test Type"])
+        st.error("Error: 'output.csv' not found. Using empty dataset.")
+        return pd.DataFrame(columns=["Assessment Name", "URL", "Remote Testing Support", "Adaptive/IRT Support",
+                                    "Test Type", "Duration", "Job Description", "Job Levels", "Languages", "Scraped Description"])
     except Exception as e:
         st.error(f"Error loading CSV: {e}")
-        return pd.DataFrame(columns=["Assessment Name", "URL", "Remote Testing Support", "Adaptive/IRT Support", "Duration", "Test Type"])
+        return pd.DataFrame(columns=["Assessment Name", "URL", "Remote Testing Support", "Adaptive/IRT Support",
+                                    "Test Type", "Duration", "Job Description", "Job Levels", "Languages", "Scraped Description"])
 
 df = load_dataset()
 
 @st.cache_data
 def setup_vector_database(_df):
-    """Set up the FAISS vector database with embeddings."""
+    """Set up the FAISS vector database with embeddings using all relevant columns."""
     if not EMBEDDINGS_AVAILABLE or embedding_model is None:
         return None, [], []
-    descriptions = [f"{row['Assessment Name']} {row.get('URL', '')} {' '.join(row['Assessment Name'].lower().split())}" for _, row in _df.iterrows()]
+    descriptions = [
+        f"{row['Assessment Name']} {row.get('URL', '')} {row['Job Description']} {row['Scraped Description']} "
+        f"{row['Job Levels']} {row['Languages']} {' '.join(row['Assessment Name'].lower().split())}"
+        for _, row in _df.iterrows()
+    ]
     embeddings = embedding_model.encode(descriptions, convert_to_numpy=True, show_progress_bar=False)
     dimension = embeddings.shape[1]
     index = faiss.IndexFlatL2(dimension) if faiss else None
@@ -204,20 +200,32 @@ def parse_query_with_gemini_threaded(query, result_queue, max_retries=3):
         if query.startswith(('http://', 'https://')):
             query = extract_text_from_url(query)
         similar_assessments = retrieve_similar_assessments(query, k=5)
-        context = "\n".join([f"Assessment: {assess['Assessment Name']}, Type: {assess['Test Type']}, Duration: {assess['Duration']}" for assess, _ in similar_assessments])
+        context = "\n".join([
+            f"Assessment: {assess['Assessment Name']}, Type: {assess['Test Type']}, Duration: {assess['Duration']}, "
+            f"Job Description: {assess['Job Description']}, Job Levels: {assess['Job Levels']}, Languages: {assess['Languages']}"
+            for assess, _ in similar_assessments
+        ])
         prompt = f"""
         You are an expert in job assessment analysis. Analyze the following query and context to extract:
         - Required skills (e.g., Java, Python, SQL, .NET Framework, or any technical skills implied, listed explicitly or inferred).
         - Maximum assessment duration in minutes (extracted directly or inferred from job timeline, e.g., 'complete in 1 hour' → 60, default to null if unclear).
-        - Relevant test types from: ['Ability & Aptitude', 'Assessment Exercises', 'Biodata & Situational Judgement', 'Competencies', 'Development & 360', 'Knowledge & Skills', 'Personality & Behavior', 'Simulations'] (inferred based on skills and context).
-        Return a JSON object with keys 'required_skills' (list), 'max_duration' (number or null), and 'test_types' (list). Use defaults if data is missing: required_skills: [], max_duration: null, test_types: [].
+        - Relevant test types from: ['Ability & Aptitude', 'Assessment Exercises', 'Biodata & Situational Judgement',
+          'Competencies', 'Development & 360', 'Knowledge & Skills', 'Personality & Behavior', 'Simulations']
+          (inferred based on skills and context).
+        - Job levels (e.g., 'Graduate', 'Mid-Professional', 'Professional Individual Contributor', inferred or explicit).
+        - Preferred languages (e.g., 'English (USA)', 'English (Global)', inferred or explicit).
+        Return a JSON object with keys 'required_skills' (list), 'max_duration' (number or null), 'test_types' (list),
+        'job_levels' (list), 'languages' (list). Use defaults if data is missing:
+        required_skills: [], max_duration: null, test_types: [], job_levels: [], languages: ['English (USA)'].
         Query: {query}
         Context: {context}
         """
         for attempt in range(max_retries):
             try:
                 response = get_response(prompt)
-                result = json.loads(response.text) if response.text and response.text.strip().startswith("{") else {"required_skills": [], "max_duration": None, "test_types": []}
+                result = json.loads(response.text) if response.text and response.text.strip().startswith("{") else {
+                    "required_skills": [], "max_duration": None, "test_types": [], "job_levels": [], "languages": ["English (USA)"]
+                }
                 if not result.get("required_skills"):
                     result["required_skills"] = [skill for skill in ["java", "python", "sql", ".net framework"] if skill in query.lower()]
                 if not result.get("test_types"):
@@ -225,25 +233,28 @@ def parse_query_with_gemini_threaded(query, result_queue, max_retries=3):
                 if not result.get("max_duration") and "minutes" in query.lower():
                     match = re.search(r"(\d+)\s*minutes?", query.lower())
                     result["max_duration"] = int(match.group(1)) if match else None
+                if not result.get("job_levels"):
+                    result["job_levels"] = ["Mid-Professional"] if "experienced" in query.lower() else []
+                if not result.get("languages"):
+                    result["languages"] = ["English (USA)"]
                 result_queue.put(result)
                 return
             except exceptions.GoogleAPIError as e:
                 if attempt < max_retries - 1:
                     time.sleep(1)
                     continue
-                result_queue.put({"required_skills": [], "max_duration": None, "test_types": []})
+                result_queue.put({"required_skills": [], "max_duration": None, "test_types": [], "job_levels": [], "languages": ["English (USA)"]})
                 st.error(f"Gemini API error after {max_retries} attempts: {e}")
             except (json.JSONDecodeError, AttributeError) as e:
                 if attempt < max_retries - 1:
                     time.sleep(1)
                     continue
-                result_queue.put({"required_skills": [], "max_duration": None, "test_types": []})
+                result_queue.put({"required_skills": [], "max_duration": None, "test_types": [], "job_levels": [], "languages": ["English (USA)"]})
                 st.error(f"Parsing error after {max_retries} attempts: {e}")
     except Exception as e:
-        result_queue.put({"required_skills": [], "max_duration": None, "test_types": []})
+        result_queue.put({"required_skills": [], "max_duration": None, "test_types": [], "job_levels": [], "languages": ["English (USA)"]})
         st.error(f"Unexpected error in parse_query_with_gemini: {e}")
 
-import re
 @st.cache_data
 def parse_query_with_gemini(query):
     """Cache and parse query using Gemini API."""
@@ -251,80 +262,128 @@ def parse_query_with_gemini(query):
     thread = threading.Thread(target=parse_query_with_gemini_threaded, args=(query, result_queue))
     thread.start()
     thread.join(timeout=15)
-    return result_queue.get() if not thread.is_alive() else {"required_skills": [], "max_duration": None, "test_types": []}
+    return result_queue.get() if not thread.is_alive() else {
+        "required_skills": [], "max_duration": None, "test_types": [], "job_levels": [], "languages": ["English (USA)"]
+    }
 
 @st.cache_data
 def recommend_assessments(query, max_results=10):
-    """Generate assessment recommendations based on query."""
+    """Generate assessment recommendations with required skills as the top priority."""
     requirements = parse_query_with_gemini(query)
     required_skills = [s.lower().strip() for s in requirements.get("required_skills", [])]
     max_duration = requirements.get("max_duration")
     required_test_types = [t.lower().strip() for t in requirements.get("test_types", [])]
+    required_job_levels = [j.lower().strip() for j in requirements.get("job_levels", [])]
+    required_languages = [l.lower().strip() for l in requirements.get("languages", [])]
     similar_assessments = retrieve_similar_assessments(query, k=max_results * 2)
     recommendations = []
 
     for row, similarity_distance in similar_assessments:
-        score = 0
         assessment_name = row["Assessment Name"].lower()
         duration = row["Duration"]
         test_types = [t.lower().strip() for t in row["Test Type"].split(", ")]
-        skill_matches = sum(1 for skill in required_skills if skill in assessment_name or any(skill in t.lower() for t in test_types))
-        if skill_matches == len(required_skills):
-            score += 100
+        job_levels = [j.lower().strip() for j in str(row["Job Levels"]).split(", ")] if row["Job Levels"] else []
+        languages = [l.lower().strip() for l in str(row["Languages"]).split(", ")] if row["Languages"] else []
+        job_desc = row["Job Description"].lower()
+        scraped_desc = row["Scraped Description"].lower()
+
+        matched_skills = [skill for skill in required_skills if skill in assessment_name or skill in job_desc or skill in scraped_desc or any(skill in t for t in test_types)]
+        skill_matches = len(matched_skills)
+        skill_score = 0
+        if skill_matches == len(required_skills) and required_skills:
+            skill_score = 1000
         elif skill_matches > 0:
-            score += skill_matches * 60
+            skill_score = skill_matches * 200
+
+        secondary_score = 0
         if max_duration and duration != "N/A" and float(duration) <= float(max_duration) * 1.2:
-            score += 30
+            secondary_score += 50
         elif not max_duration and duration != "N/A" and float(duration) <= 60:
-            score += 15
-        if required_test_types and any(test_type in ", ".join(test_types) for test_type in required_test_types):
-            score += 50
-        elif not required_test_types and any(t in ["Knowledge & Skills", "Ability & Aptitude"] for t in test_types):
-            score += 20
-        similarity_score = 0 if not EMBEDDINGS_AVAILABLE else (100 - (similarity_distance / np.max(similarity_distance) * 50) if similarity_distance > 0 and np is not None else 0)
-        score += similarity_score * 0.3
-        if score > 0:
-            recommendations.append((score, row))
+            secondary_score += 25
+
+        if required_test_types and any(test_type in test_types for test_type in required_test_types):
+            secondary_score += 40
+        elif not required_test_types and any(t in ["knowledge & skills", "ability & aptitude"] for t in test_types):
+            secondary_score += 20
+
+        if required_job_levels and any(level in job_levels for level in required_job_levels):
+            secondary_score += 30
+        elif not required_job_levels and "mid-professional" in job_levels:
+            secondary_score += 10
+
+        if required_languages and any(lang in languages for lang in required_languages):
+            secondary_score += 20
+        elif not required_languages and "english (usa)" in languages:
+            secondary_score += 5
+
+        similarity_score = 0 if not EMBEDDINGS_AVAILABLE else (100 - (similarity_distance / np.max(similarity_distance) * 50) if similarity_distance > 0 else 0)
+        secondary_score += similarity_score * 0.5
+
+        total_score = skill_score + secondary_score
+        if total_score > 0:
+            recommendations.append((total_score, row, matched_skills))
 
     recommendations.sort(key=lambda x: x[0], reverse=True)
     return recommendations[:max_results] if recommendations else []
 
-# API Endpoint
 @app.get("/recommend")
 async def get_recommendations(query: str, max_results: int = 10):
-    """GET API endpoint to retrieve assessment recommendations in JSON format."""
+    """GET API endpoint with required skills prioritized."""
     if not query:
         raise HTTPException(status_code=400, detail="Query parameter is required")
 
-    # Process the query (similar to Streamlit logic)
     requirements = parse_query_with_gemini(query)
     required_skills = [s.lower().strip() for s in requirements.get("required_skills", [])]
     max_duration = requirements.get("max_duration")
     required_test_types = [t.lower().strip() for t in requirements.get("test_types", [])]
+    required_job_levels = [j.lower().strip() for j in requirements.get("job_levels", [])]
+    required_languages = [l.lower().strip() for l in requirements.get("languages", [])]
     similar_assessments = retrieve_similar_assessments(query, k=max_results * 2)
     recommendations = []
 
     for row, similarity_distance in similar_assessments:
-        score = 0
         assessment_name = row["Assessment Name"].lower()
         duration = row["Duration"]
         test_types = [t.lower().strip() for t in row["Test Type"].split(", ")]
-        skill_matches = sum(1 for skill in required_skills if skill in assessment_name or any(skill in t.lower() for t in test_types))
-        if skill_matches == len(required_skills):
-            score += 100
+        job_levels = [j.lower().strip() for j in str(row["Job Levels"]).split(", ")] if row["Job Levels"] else []
+        languages = [l.lower().strip() for l in str(row["Languages"]).split(", ")] if row["Languages"] else []
+        job_desc = row["Job Description"].lower()
+        scraped_desc = row["Scraped Description"].lower()
+
+        matched_skills = [skill for skill in required_skills if skill in assessment_name or skill in job_desc or skill in scraped_desc or any(skill in t for t in test_types)]
+        skill_matches = len(matched_skills)
+        skill_score = 0
+        if skill_matches == len(required_skills) and required_skills:
+            skill_score = 1000
         elif skill_matches > 0:
-            score += skill_matches * 60
+            skill_score = skill_matches * 200
+
+        secondary_score = 0
         if max_duration and duration != "N/A" and float(duration) <= float(max_duration) * 1.2:
-            score += 30
+            secondary_score += 50
         elif not max_duration and duration != "N/A" and float(duration) <= 60:
-            score += 15
-        if required_test_types and any(test_type in ", ".join(test_types) for test_type in required_test_types):
-            score += 50
-        elif not required_test_types and any(t in ["Knowledge & Skills", "Ability & Aptitude"] for t in test_types):
-            score += 20
-        similarity_score = 0 if not EMBEDDINGS_AVAILABLE else (100 - (similarity_distance / np.max(similarity_distance) * 50) if similarity_distance > 0 and np is not None else 0)
-        score += similarity_score * 0.3
-        if score > 0:
+            secondary_score += 25
+
+        if required_test_types and any(test_type in test_types for test_type in required_test_types):
+            secondary_score += 40
+        elif not required_test_types and any(t in ["knowledge & skills", "ability & aptitude"] for t in test_types):
+            secondary_score += 20
+
+        if required_job_levels and any(level in job_levels for level in required_job_levels):
+            secondary_score += 30
+        elif not required_job_levels and "mid-professional" in job_levels:
+            secondary_score += 10
+
+        if required_languages and any(lang in languages for lang in required_languages):
+            secondary_score += 20
+        elif not required_languages and "english (usa)" in languages:
+            secondary_score += 5
+
+        similarity_score = 0 if not EMBEDDINGS_AVAILABLE else (100 - (similarity_distance / np.max(similarity_distance) * 50) if similarity_distance > 0 else 0)
+        secondary_score += similarity_score * 0.5
+
+        total_score = skill_score + secondary_score
+        if total_score > 0:
             recommendations.append({
                 "rank": len(recommendations) + 1,
                 "assessment_name": row["Assessment Name"],
@@ -333,7 +392,10 @@ async def get_recommendations(query: str, max_results: int = 10):
                 "remote_testing_support": row["Remote Testing Support"],
                 "adaptive_irt_support": row["Adaptive/IRT Support"],
                 "test_type": row["Test Type"],
-                "score": score
+                "job_levels": row["Job Levels"],
+                "languages": row["Languages"],
+                "job_description": row["Job Description"],
+                "score": total_score
             })
 
     recommendations.sort(key=lambda x: x["score"], reverse=True)
@@ -342,8 +404,10 @@ async def get_recommendations(query: str, max_results: int = 10):
 def evaluate_recommendations():
     """Evaluate recommendation performance with recall and MAP metrics."""
     test_queries = [
-        {"query": "Hiring Java, Python, SQL developers with .NET Framework, 40 minutes", "relevant": ["Java Programming", "Python Programming", "SQL Server", ".NET Framework 4.5"]},
-        {"query": "Research Engineer AI, 60 minutes", "relevant": ["AI Fundamentals", "Research Skills"]}
+        {"query": "Hiring Java, Python, SQL developers with .NET Framework, 40 minutes, Mid-Professional, English (USA)",
+         "relevant": [".NET Framework 4.5", "Java Programming", "Python Programming", "SQL Server"]},
+        {"query": "Research Engineer AI, 60 minutes, Professional Individual Contributor, English (USA)",
+         "relevant": ["AI Skills", "Aeronautical Engineering"]}
     ]
     k = 5
     recall_scores = []
@@ -372,17 +436,17 @@ def evaluate_recommendations():
     return np.mean(recall_scores) if recall_scores else 0, np.mean(ap_scores) if ap_scores else 0
 
 def run_streamlit():
-    """Run the Streamlit application for assessment recommendations."""
+    """Run the Streamlit application with an optimized table view."""
     st.title("SHL Assessment Recommendation System :rocket:")
-    st.markdown("**Welcome!** Enter a job description or URL (e.g., LinkedIn job page) to get tailored assessment recommendations. :chart_with_upwards_trend:")
+    st.markdown("**Welcome!** Enter a job description or URL to get tailored assessment recommendations, prioritizing required skills. :chart_with_upwards_trend:")
     st.sidebar.title("Settings")
     input_type = st.sidebar.radio("Input Type", ["Text", "URL"], index=1)
     max_results = st.sidebar.slider("Max Recommendations", 5, 15, 10)
     user_input = st.text_area(
         "Enter Job Description or URL",
         height=150,
-        placeholder="E.g., 'Hiring Java, Python, SQL developers with .NET Framework, 40 minutes' or a URL",
-        value="https://www.linkedin.com/jobs/view/research-engineer-ai-at-shl-4194768899/?originalSubdomain=in" if input_type == "URL" else "I am hiring for Java, Python, and SQL developers with .NET Framework experience, 40 minutes."
+        placeholder="E.g., 'Hiring Java, Python, SQL developers with .NET Framework, 40 minutes, Mid-Professional' or a URL",
+        value="https://www.linkedin.com/jobs/view/research-engineer-ai-at-shl-4194768899/?originalSubdomain=in" if input_type == "URL" else "Hiring Java, Python, and SQL developers with .NET Framework experience, 40 minutes, Mid-Professional."
     )
 
     if st.button("Generate Recommendations :mag_right:"):
@@ -392,6 +456,7 @@ def run_streamlit():
                 requirements = parse_query_with_gemini(user_input)
                 st.json(requirements)
                 st.subheader("Top Recommendations")
+
                 results = recommend_assessments(user_input, max_results=max_results)
                 if results:
                     table_data = [
@@ -400,33 +465,53 @@ def run_streamlit():
                             "Assessment Name": row["Assessment Name"],
                             "URL": row["URL"],
                             "Duration (min)": float(row["Duration"]) if row["Duration"] != "N/A" else "N/A",
-                            "Remote Testing Support": row["Remote Testing Support"],
-                            "Adaptive/IRT Support": row["Adaptive/IRT Support"],
-                            "Test Type": row["Test Type"]
+                            "Remote Testing": row["Remote Testing Support"],
+                            "Adaptive/IRT": row["Adaptive/IRT Support"],
+                            "Test Type": row["Test Type"],
+                            "Job Levels": row["Job Levels"],
+                            "Languages": row["Languages"],
+                            "Job Description": row["Job Description"][:100] + "..." if len(row["Job Description"]) > 100 else row["Job Description"]  # Truncate long descriptions
                         }
-                        for i, (_, row) in enumerate(results)
+                        for i, (score, row, matched_skills) in enumerate(results)
                     ]
                     recommendations_df = pd.DataFrame(table_data)
+
+                    # Optimized HTML table styling
                     html_table = recommendations_df.to_html(escape=False, index=False)
                     html_table = (
                         html_table
-                        .replace('<td>', '<td style="text-align: left; padding: 10px;">')
-                        .replace('<th>', '<th style="background-color: #333333; color: #ffffff; font-weight: bold; padding: 10px; border-bottom: 2px solid #555;">')
+                        .replace('<td>', '<td style="text-align: left; padding: 8px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">')  # Compact cells with ellipsis
+                        .replace('<th>', '<th style="background-color: #333333; color: #ffffff; font-weight: bold; padding: 8px; border-bottom: 2px solid #555; text-align: left;">')  # Compact headers
                         .replace('<tr>', '<tr style="background-color: #1a1a1a; color: #ffffff;">')
                         .replace('</tr>', '</tr><tr style="background-color: #1a1a1a; color: #ffffff;">')
-                        .replace('<table border="1" class="dataframe">', '<table border="1" class="dataframe" style="background-color: #1a1a1a; color: #ffffff; width: 100%;">')
+                        .replace('<table border="1" class="dataframe">', '<table border="1" class="dataframe" style="width: 100%; max-width: 1200px; background-color: #1a1a1a; color: #ffffff; border-collapse: collapse; overflow-x: auto; display: block;">')  # Fixed width with scroll
                     )
-                    html_table = html_table.replace(
-                        f'<td>{recommendations_df["URL"][0]}</td>',
-                        f'<td><a href="{recommendations_df["URL"][0]}" target="_blank" style="color: #1E90FF; text-decoration: underline;">Link</a></td>'
-                    )
-                    for i in range(1, len(recommendations_df)):
+                    for i in range(len(recommendations_df)):
                         html_table = html_table.replace(
                             f'<td>{recommendations_df["URL"][i]}</td>',
-                            f'<td><a href="{recommendations_df["URL"][i]}" target="_blank" style="color: #1E90FF; text-decoration: underline;">Link</a></td>'
+                            f'<td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><a href="{recommendations_df["URL"][i]}" target="_blank" style="color: #1E90FF; text-decoration: underline;">Link</a></td>'
                         )
                     html_table = html_table.replace('</tr>', '</tr><tr style="background-color: #2a2a2a;" onmouseover="this.style.backgroundColor=\'#2a2a2a\';" onmouseout="this.style.backgroundColor=\'#1a1a1a\';">')
+
+                    # Wrap table in a scrollable container
+                    st.markdown(
+                        """
+                        <style>
+                        .table-container {
+                            max-height: 500px;
+                            overflow-y: auto;
+                            overflow-x: auto;
+                            border: 1px solid #555;
+                            margin: 10px 0;
+                        }
+                        </style>
+                        <div class="table-container">
+                        """,
+                        unsafe_allow_html=True
+                    )
                     st.write(html_table, unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
                     st.write(f"Debug: Number of recommendations: {len(results)}, Top score: {results[0][0] if results else 0}")
                 else:
                     st.error("No matching assessments found. Please check the input or dataset.")
@@ -451,17 +536,13 @@ def run_streamlit():
 **Developed by Yash Singh** :star2:
 """)
 
-
 async def main():
-
     def run_api():
         uvicorn.run(app, host="0.0.0.0", port=8000)
 
-    import threading
     api_thread = threading.Thread(target=run_api, daemon=True)
     api_thread.start()
 
-    # Run Streamlit
     run_streamlit()
 
 if __name__ == "__main__":
